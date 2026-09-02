@@ -54,3 +54,5 @@ Storage sub-container, using mysql for general document storage, and potentially
 9) Create vectorDB using article metadata
 
 10) Add similarity search for articles.
+
+make job queue event driven

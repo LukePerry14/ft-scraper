@@ -185,7 +185,6 @@ async function extract_content(context: BrowserContext, articles: Set<string>): 
 
       return dataJSON;
     } finally {
-      // Always close the page, even on error — never the shared context/browser.
       await page.close();
     }
 }
