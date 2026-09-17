@@ -19,6 +19,35 @@ Typescript based logic to scrape the articles from the FT. Isolating metadata, t
 
 Storage sub-container, using mysql for general document storage, and potentially lightweight vectorDB for similar article storage.
 
+# DB Schema
+cur.execute("""
+  CREATE TABLE IF NOT EXISTS articles (
+    articleID TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    content TEXT,
+    summary TEXT,
+    author TEXT,
+    publishDate DATE,
+    articleEmbedding F32_BLOB(1024)
+  )
+""")
+
+cur.execute("""
+  CREATE TABLE IF NOT EXISTS topics (
+    topicID INTEGER PRIMARY KEY AUTOINCREMENT,
+    topicName TEXT NOT NULL
+  )
+""")
+
+cur.execute("""
+  CREATE TABLE IF NOT EXISTS article_topics (
+    articleID TEXT,
+    topicID INTEGER,
+    PRIMARY KEY (articleID, topicID),
+    FOREIGN KEY (articleID) REFERENCES articles(articleID),
+    FOREIGN KEY (topicID) REFERENCES topics(topicID)
+  )
+"""
 
 # TODO
 

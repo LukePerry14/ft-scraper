@@ -2,38 +2,42 @@ import asyncio
 from contextlib import asynccontextmanager
 import json
 from typing import List, Optional
-import os
-from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-
 from . import model_manager
 from .summarise import summarise_article
 from . import priority_queue
+import turso
+import os
+import dotenv
+dotenv.load_dotenv()
+
 
 # Make sure never less than 1
 IDLE_CHECK_INTERVAL_SECONDS = 30
 
 manager = model_manager.ModelManager()
-
 queue = priority_queue.PriorityQueue()
-
 summarised = set()
+
+# Connect to Turso DB
+con = turso.connect(os.getenv("STORAGE_PATH"))
+
 
 async def _summary_worker():
     while True:
         if len(queue) > 0:
-            articleQObj = queue.dequeue()
+            contentPath = queue.dequeue()
             model, tokenizer = await asyncio.to_thread(manager.get_model)
             try:
-                print(f"Summarising {articleQObj}")
-                JSONOut = await asyncio.to_thread(summarise_article, model=model, tokenizer=tokenizer, filePath=articleQObj[0], contentPath=articleQObj[1])
+                print(f"Summarising {contentPath}")
+                JSONOut = await asyncio.to_thread(summarise_article, model=model, tokenizer=tokenizer, contentPath=contentPath)
                 print(f"JSONOut: {JSONOut}")
-                summarised.add(articleQObj[1])
+                summarised.add(contentPath)
             except Exception as e:
                 print(f"Article Summary failed: {e}")
-                print(f"Requeing {articleQObj}")
-                queue.enqueue(articleQObj)
+                print(f"Requeing {contentPath}")
+                queue.enqueue(contentPath)
         else:
             await asyncio.sleep(IDLE_CHECK_INTERVAL_SECONDS//2)
 
@@ -57,15 +61,10 @@ app = FastAPI(lifespan=lifespan)
 
 
 class EnqueueRequest(BaseModel):
-    filePath: Optional[str]
     contentPaths: List[str]
 
 class BumpupRequest(BaseModel):
     contentPath: str
-
-class SummarisedQueryRequest(BaseModel):
-    filePath: Optional[str]
-    contentPaths: List[str]
 
 
 @app.get("/status")
@@ -73,12 +72,10 @@ def status():
     return {"modelLoaded": manager.is_loaded()}
 
 
-@app.get("/articles/processed")
-def processed(req: SummarisedQueryRequest):
-    retObj = {}
-
-    for path in req.contentPaths:
-        retObj[path] = path in summarised
+@app.get("/articles/{contentPath: path}")
+def processed(contentPath: str):
+    retObj = {"contentPath": contentPath}
+    retObj["summarised"] = contentPath in summarised
 
     return retObj
 
@@ -110,24 +107,11 @@ def add_to_queue(req: EnqueueRequest):
 
 
 
-@app.post("/bumpup")
-def bumpup(req: BumpupRequest):
+@app.post("/bumpup/{contentPath: path}")
+def bumpup(contentPath: str):
     try:
-        queue.bumpup(qItem=req.contentPath)
+        queue.bumpup(qItem=contentPath)
     except priority_queue.MissingItemError:
         raise HTTPException(status_code=404, detail="Requested Item not in Summary Queue")
 
 
-# standard synchronous endpoint rather than async endpoint to ensure blocking.
-# @app.post("/summarise")
-# def summarise(req: SummariseRequest):
-#     model, tokenizer = manager.get_model()
-
-#     try:
-#         return summarise_article(model, tokenizer, req.filePath, req.contentPath)
-#     except FileNotFoundError:
-#         raise HTTPException(status_code=404, detail=f"File not found: {req.filePath}")
-#     except KeyError:
-#         raise HTTPException(status_code=404, detail=f"Article not found for contentPath: {req.contentPath}")
-#     except IOError:
-#         raise HTTPException(status_code=404, detail=f"File Access Error")

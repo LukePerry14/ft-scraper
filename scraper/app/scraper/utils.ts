@@ -10,6 +10,8 @@ interface Article {
     title: String;
     topics: String[];
     contentPath: String;
+    author: String;
+    publishDate: Date;
     articleContent?: Array<string>;
 }
 
@@ -45,8 +47,11 @@ async function _load_json(filePath: string) {
     return dataJSON;
 }
 
+async function render_summary(context: BrowserContext, contentPath: string, summaryData: string) {
+  // Navigates to correct page and swaps out content for summary content
+}
 
-async function build_articles_json(context: BrowserContext): Promise<MetaArticleStore> {
+async function build_articles_json(context: BrowserContext, port: number): Promise<MetaArticleStore> {
 
   // Check login context exists
   if (!await valid_login_context()) {
@@ -101,6 +106,27 @@ async function build_articles_json(context: BrowserContext): Promise<MetaArticle
       }
     }
 
+    // Redirect all urls to point to localhost
+    await page.evaluate((port) => {
+    document.querySelectorAll('a[href]').forEach((link) => {
+      const href = link.getAttribute('href');
+      if (!href) return;
+
+      try {
+        const url = new URL(href, window.location.href);
+
+        if (url.origin === 'https://www.ft.com' || url.origin === 'https://ft.com') {
+          link.setAttribute(
+            'href',
+            `http://localhost:${port}${url.pathname}${url.search}${url.hash}`
+          );
+        }
+      } catch {
+        // ignore invalid links
+      }
+    });
+  }, port);
+
     let metaFile: MetaArticleStore = {
       "pageHTML": await page.content(),
       "articles": stories,
@@ -127,57 +153,46 @@ async function build_articles_json(context: BrowserContext): Promise<MetaArticle
   }
 }
 
-async function extract_content(context: BrowserContext, articles: Set<string>): Promise<MetaArticleStore> {
+async function extract_content(context: BrowserContext, article: string): Promise<MetaArticleStore> {
 
     if (!await valid_login_context()) {
       const err: any = new Error("Session invalid — re-authenticate manually via login()");
       err.statusCode = 401;
       throw err;
     }
-    const filePath = path.join(process.cwd(), config.tmpStorage, _get_filename_json());
 
-    try {
-      await access(filePath, constants.F_OK);
-    } catch {
-      console.log("Data for today not found, extracting...");
-      await build_articles_json(context);
-    }
+    let articleObj: Article;
+    articleObj.contentPath = article;
 
-    const dataJSON: MetaArticleStore = await _load_json(filePath);
-
-    // One page per call, from the shared, already-authenticated context.
     const page = await context.newPage();
 
     try {
-      for (let article_key of articles.size === 0 ? Object.keys(dataJSON.articles) : [...articles]) {
+        for (let backoff = 0; backoff < config.maxBackoff; backoff++) {
+            
+            let response = await page.goto(config.homeURL + article.contentPath);
 
-          for (let backoff = 0; backoff < config.maxBackoff; backoff++) {
-              let article: Article = dataJSON.articles[article_key];
-              if (!article) continue;
-              let response = await page.goto(config.homeURL + article.contentPath);
+            if (response?.ok()) {
+                const body = await page.locator("#article-body").first();
+                const paragraphs = await body.locator("p").allInnerTexts()
 
-              if (response?.ok()) {
-                  const body = await page.locator("#article-body").first();
-                  const paragraphs = await body.locator("p").allInnerTexts()
+                article.articleContent = paragraphs;
 
-                  article.articleContent = paragraphs;
+                dataJSON.articles[article_key] = article;
+                break;
+            }
 
-                  dataJSON.articles[article_key] = article;
-                  break;
-              }
+            else if (response?.status() === 429) {
+                let backoffTime = Math.pow(2, backoff) * 1000;
+                console.log(`Hit Cloudflare throttling, retrying after ${backoffTime/1000}s...`);
+                await sleep(backoffTime-1000);
+            }
 
-              else if (response?.status() === 429) {
-                  let backoffTime = Math.pow(2, backoff) * 1000;
-                  console.log(`Hit Cloudflare throttling, retrying after ${backoffTime/1000}s...`);
-                  await sleep(backoffTime-1000);
-              }
-
-              else {
-                  console.error(`Unknown Error: ${response?.status()}`);
-              }
-              await sleep(1000);
-          }
-      }
+            else {
+                console.error(`Unknown Error: ${response?.status()}`);
+            }
+            await sleep(1000);
+        }
+    
 
       await writeFile(filePath, JSON.stringify(dataJSON, null, 2));
 
